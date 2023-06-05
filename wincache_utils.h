@@ -28,23 +28,26 @@
    | Module: wincache_utils.h                                                                     |
    +----------------------------------------------------------------------------------------------+
    | Author: Kanwaljeet Singla <ksingla@microsoft.com>                                            |
+   | Updated: Eric Stenson <ericsten@microsoft.com>                                               |
    +----------------------------------------------------------------------------------------------+
 */
 
 #ifndef _WINCACHE_UTILS_H_
 #define _WINCACHE_UTILS_H_
 
-extern unsigned int utils_hashcalc(const char * str, unsigned int strlen);
-extern unsigned int utils_getindex(const char * filename, unsigned int numfiles);
+extern uint32_t     utils_hashcalc(const char * str, size_t strlen);
+extern uint32_t     utils_getindex(const char * filename, unsigned int numfiles);
 extern const char * utils_filepath(zend_file_handle * file_handle);
-extern char *       utils_fullpath(const char * filename, int filename_len);
-extern int          utils_cwdcexec(char * buffer, unsigned int length TSRMLS_DC);
-extern int          utils_filefolder(const char * filepath, unsigned int flength, char * pbuffer, unsigned int length);
-extern int          utils_apoolpid(TSRMLS_D);
+extern char *       utils_fullpath(const char * filename, size_t filename_len);
+extern int          utils_cwdcexec(char * buffer, size_t length);
+extern int          utils_filefolder(const char * filepath, size_t flength, char * pbuffer, size_t length);
+extern int          utils_apoolpid();
 extern unsigned int utils_ticksdiff(unsigned int present, unsigned int past);
-extern char *       utils_resolve_path(const char *filename, int filename_length, const char *path TSRMLS_DC);
+extern char *       utils_resolve_path(const char *filename, size_t filename_length, const char *path);
 extern char *       utils_build_temp_filename(char * suffix);
-extern void         utils_get_filename_and_line(const char **filename, uint *linenumber);
+extern void         utils_get_filename_and_line(const char **filename, uint32_t *linenumber);
+extern void         utils_wait_for_listener(const char * respath, unsigned int timeout);
+extern unsigned int utils_get_prime_less_than(size_t num);
 
 extern int
 utils_create_init_event(
@@ -68,5 +71,7 @@ utils_set_apppool_acl(
 
 extern int          utils_revert_if_necessary(HANDLE *phOriginalToken);
 extern void         utils_reimpersonate_if_necessary(HANDLE hOriginalToken);
+
+extern const char * utils_get_typename(zend_uchar type);
 
 #endif /* _WINCACHE_UTILS_H_ */

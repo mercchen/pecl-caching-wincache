@@ -28,6 +28,7 @@
    | Module: php_wincache.h                                                                       |
    +----------------------------------------------------------------------------------------------+
    | Author: Kanwaljeet Singla <ksingla@microsoft.com>                                            |
+   | Updated: Eric Stenson <ericsten@microsoft.com>                                               |
    +----------------------------------------------------------------------------------------------+
 */
 
@@ -43,13 +44,6 @@ extern zend_module_entry wincache_module_entry;
 #include "precomp.h"
 #endif
 
-typedef struct ocacheval_list ocacheval_list;
-struct ocacheval_list
-{
-    ocache_value *           pvalue;      /* ocache value which is in use */
-    ocacheval_list *         next;        /* pointer to next ocacheval_list entry */
-};
-
 typedef struct wclock_context wclock_context;
 struct wclock_context
 {
@@ -58,53 +52,52 @@ struct wclock_context
     unsigned int             tuse;        /* Tick count when this was last used */
 };
 
+#if PHP_VERSION_ID >= 70200
+# define wincache_zif_handler zif_handler
+#else
+typedef void (*wincache_zif_handler)(INTERNAL_FUNCTION_PARAMETERS);
+#endif
+
 /* Module globals */
 ZEND_BEGIN_MODULE_GLOBALS(wincache)
     aplist_context *         lfcache;     /* Shared memory for fcache filelist */
-    aplist_context *         locache;     /* Shared memory for ocache filelist */
     zvcache_context *        zvucache;    /* User controlled user cache */
     zvcache_context *        zvscache;    /* Zval cache used to store session data */
     HashTable *              phscache;    /* Hashtable for session caches for modified savepaths */
-    unsigned char            issame;      /* Is the opcode cache local */
     unsigned int             numfiles;    /* Configured number of files to handle */
     unsigned int             fcchkfreq;   /* File change check frequency in seconds */
     unsigned int             ttlmax;      /* Seconds a cache entry can stay dormant */
-                                          /* Pointer to the original rmdir function */
-    void                    (*orig_rmdir)(INTERNAL_FUNCTION_PARAMETERS);
+    wincache_zif_handler     orig_rmdir;  /* Pointer to the original rmdir function */
                                           /* Pointer to the original file_exists function */
-    void                    (*orig_file_exists)(INTERNAL_FUNCTION_PARAMETERS);
+    wincache_zif_handler     orig_file_exists;
                                           /* Pointer to the original file_get_contents function */
-    void                    (*orig_file_get_contents)(INTERNAL_FUNCTION_PARAMETERS);
+    wincache_zif_handler     orig_file_get_contents;
                                           /* Pointer to the original filesize function */
-    void                    (*orig_filesize)(INTERNAL_FUNCTION_PARAMETERS);
-                                          /* Pointer to the original is_dir function */
-    void                    (*orig_is_dir)(INTERNAL_FUNCTION_PARAMETERS);
+    wincache_zif_handler     orig_filesize;
+    wincache_zif_handler     orig_is_dir; /* Pointer to the original is_dir function */
                                           /* Pointer to the original is_file function */
-    void                    (*orig_is_file)(INTERNAL_FUNCTION_PARAMETERS);
+    wincache_zif_handler     orig_is_file;
                                           /* Pointer to the original is_readable function */
-    void                    (*orig_is_readable)(INTERNAL_FUNCTION_PARAMETERS);
+    wincache_zif_handler     orig_is_readable;
                                           /* Pointer to the original is_writable function */
-    void                    (*orig_is_writable)(INTERNAL_FUNCTION_PARAMETERS);
+    wincache_zif_handler     orig_is_writable;
                                           /* Pointer to the original is_writeable function */
-    void                    (*orig_is_writeable)(INTERNAL_FUNCTION_PARAMETERS);
+    wincache_zif_handler     orig_is_writeable;
                                           /* Pointer to the original readfile function */
-    void                    (*orig_readfile)(INTERNAL_FUNCTION_PARAMETERS);
+    wincache_zif_handler     orig_readfile;
                                           /* Pointer to the original realpath function */
-    void                    (*orig_realpath)(INTERNAL_FUNCTION_PARAMETERS);
-                                          /* Pointer to the original unlink function */
-    void                    (*orig_unlink)(INTERNAL_FUNCTION_PARAMETERS);
+    wincache_zif_handler     orig_realpath;
+    wincache_zif_handler     orig_unlink; /* Pointer to the original unlink function */
+    wincache_zif_handler     orig_rename; /* Pointer to the original rename function */
     zend_bool                enablecli;   /* Enable wincache for command line sapi */
     zend_bool                fcenabled;   /* File cache enabled or disabled */
     unsigned int             fcachesize;  /* File cache size in MBs */
     unsigned int             maxfilesize; /* Max file size (kb) allowed in fcache */
-    zend_bool                ocenabled;   /* Opcode cache enabled or disabled */
-    unsigned int             ocachesize;  /* Opcode cache size in MB */
     zend_bool                ucenabled;   /* User cache enabled or disabled */
     unsigned int             ucachesize;  /* User cache size in MBs */
     unsigned int             scachesize;  /* Session cache size in MBs */
     unsigned int             debuglevel;  /* Debug dump level (0/101/201/301/401/501) */
     char *                   ignorelist;  /* Pipe-separated list of files to ignore */
-    char *                   ocefilter;   /* Comma-separated sitelist having ocenabled toggled */
     char *                   fcefilter;   /* Comma-separated sitelist having fcenabled toggled */
     char *                   namesalt;    /* Salt to use in all the names */
     zend_bool                fcndetect;   /* File change notication detection enabled */
@@ -112,8 +105,6 @@ ZEND_BEGIN_MODULE_GLOBALS(wincache)
 
     HashTable *              wclocks;     /* Locks created using wincache_lock call */
     HashTable *              zvcopied;    /* Copied zvals to make refcounting work */
-    ocacheval_list *         oclisthead;  /* List of ocache_value entries in use */
-    ocacheval_list *         oclisttail;  /* Tail of ocache_value entries list */
     unsigned int             lasterror;   /* Last error value */
     unsigned int             uclasterror; /* Last error value encountered by user cache */
     unsigned int             parentpid;   /* Parent process identifier */
@@ -121,17 +112,9 @@ ZEND_BEGIN_MODULE_GLOBALS(wincache)
     zend_llist *             errmsglist;  /* List of errors generated by PHP */
     zend_ini_entry *         inifce;      /* fcenabled ini_entry in ini_directives */
     zend_ini_entry *         inisavepath; /* save_path ini_entry in ini_directives */
-    unsigned char            dooctoggle;  /* Do toggle of ocenabled due to filter settigns */
     unsigned char            dofctoggle;  /* Do toggle of fcenabled due to filter settigns */
-    zend_bool                srwlocks;    /* Enable shared reader/writer locks */
                                           /* Enable wrapper functions around standard PHP functions */
     zend_bool                reroute_enabled;
-#ifdef ZEND_ENGINE_2_4
-    unsigned int             internedsize; /* Bytes for the interned strings cache */
-#endif /* ZEND_ENGINE_2_4 */
-#ifdef WINCACHE_TEST
-    zend_bool                olocaltest;  /* Local opcode cache test configuration */
-#endif
     const char *             apppoolid;   /* The application id. */
     char *                   filemapdir;  /* Directory where temp filemap files should be created */
 ZEND_END_MODULE_GLOBALS(wincache)
@@ -139,29 +122,37 @@ ZEND_END_MODULE_GLOBALS(wincache)
 ZEND_EXTERN_MODULE_GLOBALS(wincache)
 
 #ifdef ZTS
-#define WCG(v) TSRMG(wincache_globals_id, zend_wincache_globals *, v)
+#define WCG(v) ZEND_TSRMG(wincache_globals_id, zend_wincache_globals *, v)
+# ifdef COMPILE_DL_WINCACHE
+ZEND_TSRMLS_CACHE_EXTERN();
+# endif
 #else
 #define WCG(v) (wincache_globals.v)
 #endif
 
-typedef char *(*fn_zend_resolve_path)(const char *filename, int filename_len TSRMLS_DC);
-typedef int (*fn_zend_stream_open_function)(const char * filename, zend_file_handle *handle TSRMLS_DC);
-typedef zend_op_array * (*fn_zend_compile_file)(zend_file_handle *, int TSRMLS_DC);
-typedef void (*fn_zend_error_cb)(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
+#if PHP_API_VERSION >= 20180731
+typedef zend_string *(*fn_zend_resolve_path)(const char *filename, size_t filename_len);
+#else
+typedef zend_string *(*fn_zend_resolve_path)(const char *filename, int filename_len);
+#endif
+
+typedef int (*fn_zend_stream_open_function)(const char * filename, zend_file_handle *handle);
+typedef zend_op_array * (*fn_zend_compile_file)(zend_file_handle *, int);
+typedef void (*fn_zend_error_cb)(int type, const char *error_filename, const uint32_t error_lineno, const char *format, va_list args);
 
 fn_zend_resolve_path original_resolve_path;
 fn_zend_stream_open_function original_stream_open_function;
-fn_zend_compile_file original_compile_file;
-fn_zend_error_cb original_error_cb;
 
-extern char * wincache_resolve_path(const char * filename, int filename_len TSRMLS_DC);
-extern int wincache_stream_open_function(const char * filename, zend_file_handle * file_handle TSRMLS_DC);
-extern zend_op_array * wincache_compile_file(zend_file_handle * file_handle, int type TSRMLS_DC);
-extern void wincache_error_cb(int type, const char *error_filename, const uint error_lineno, const char *format, va_list args);
+#if PHP_API_VERSION >= 20180731
+extern zend_string * wincache_resolve_path(const char * filename, size_t filename_len);
+#else
+extern zend_string * wincache_resolve_path(const char * filename, int filename_len);
+#endif
 
-extern void wincache_intercept_functions_init(TSRMLS_DC);
-extern void wincache_intercept_functions_shutdown(TSRMLS_DC);
-extern void wincache_save_orig_functions(TSRMLS_DC);
+extern int wincache_stream_open_function(const char * filename, zend_file_handle * file_handle);
 
+extern void wincache_intercept_functions_init();
+extern void wincache_intercept_functions_shutdown();
+extern void wincache_save_orig_functions();
 
 #endif /* _PHP_WINCACHE_H_ */

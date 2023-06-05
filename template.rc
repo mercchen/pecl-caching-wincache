@@ -28,6 +28,7 @@
    | Module: template.rc                                                                          |
    +----------------------------------------------------------------------------------------------+
    | Author: Kanwaljeet Singla <ksingla@microsoft.com>                                            |
+   | Updated: Eric Stenson <ericsten@microsoft.com>                                               |
    +----------------------------------------------------------------------------------------------+
 */
 
@@ -38,10 +39,10 @@
 #include "winresrc.h"
 #include "main/php_version.h"
 
-#define WINCACHE_VMAJOR     1
-#define WINCACHE_VMINOR     3
-#define WINCACHE_VMMDD      7
-#define WINCACHE_VREVISION  7
+#define WINCACHE_VMAJOR     2
+#define WINCACHE_VMINOR     0
+#define WINCACHE_VMMDD      0
+#define WINCACHE_VREVISION  8
 
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 #pragma code_page(1252)
@@ -80,9 +81,9 @@ BEGIN
             VALUE "CompanyName", "Microsoft Corp.\0"
             VALUE "FileDescription", "Windows Cache Extension for PHP\0"
             VALUE "FileVersion", STRVER4(WINCACHE_VMAJOR,WINCACHE_VMINOR,WINCACHE_VMMDD,WINCACHE_VREVISION)
-            VALUE "LegalCopyright", "Copyright © 2014 Microsoft Corp. All Rights Reserved.\0"
+            VALUE "LegalCopyright", "Copyright © 2016 Microsoft Corp. All Rights Reserved.\0"
             VALUE "OriginalFilename", FILE_NAME "\0"
-            VALUE "ProductName", "Windows Cache Extension " STRVER2(WINCACHE_VMAJOR,WINCACHE_VMINOR) " for PHP " STRVER2(PHP_MAJOR_VERSION, PHP_MINOR_VERSION)
+            VALUE "ProductName", "Windows Cache Extension" STRVER2(WINCACHE_VMAJOR,WINCACHE_VMINOR) " for PHP " STRVER2(PHP_MAJOR_VERSION, PHP_MINOR_VERSION)
             VALUE "ProductVersion", STRVER2(WINCACHE_VMAJOR,WINCACHE_VMINOR)
             VALUE "URL", "http://www.microsoft.com\0"
         END
@@ -94,7 +95,7 @@ BEGIN
 END
 
 #pragma message("Including ETW RC")
-#include "..\pecl\wincache\wincache_etw.rc"
+#include "wincache_etw.rc"
 
 #ifdef MC_INCLUDE
 #include MC_INCLUDE

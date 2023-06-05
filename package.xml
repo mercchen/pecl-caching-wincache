@@ -3,7 +3,7 @@
   <name>WINCACHE</name>
   <channel>pecl.php.net</channel>
   <summary>Windows Cache Extension for PHP</summary>
-  <description>Windows Cache Extension for PHP is a PHP accelerator that is used to increase the speed of PHP applications running on Windows and Windows Server. Once the Windows Cache Extension for PHP is enabled and loaded by the PHP engine, PHP applications can take advantage of the functionality without any code modifications. The extension includes PHP opcode cache, file system cache and relative path cache. In addition the extension provides cache API's and a PHP session handler.
+  <description>Windows Cache Extension for PHP is a PHP accelerator that is used to increase the speed of PHP applications running on Windows and Windows Server. Once the Windows Cache Extension for PHP is enabled and loaded by the PHP engine, PHP applications can take advantage of the functionality without any code modifications. The extension includes file system cache and relative path cache. In addition the extension provides cache API's and a PHP session handler.
   </description>
   <lead>
     <name>Ruslan Yakushev</name>
@@ -29,10 +29,10 @@
     <email>ericsten@php.net</email>
     <active>yes</active>
   </lead>
-  <date>2015-03-23</date>
+  <date>2016-11-09</date>
   <version>
-    <release>1.3.7.4</release>
-    <api>1.3.0</api>
+    <release>2.0.0.8</release>
+    <api>2.0.0</api>
   </version>
   <stability>
     <release>stable</release>
@@ -40,6 +40,201 @@
   </stability>
   <license uri="http://www.opensource.org/licenses/bsd-license.php">BSD License</license>
   <notes>
+2.0.0.8:
+- Revert "Global\" prefix for named objects.  It breaks IIS Express.
+- Improve tracing by adding thread ID to debug trace logs
+  </notes>
+  <contents>
+    <dir name="/">
+      <file role="doc" name="config.w32"/>
+      <file role="doc" name="INSTALL"/>
+      <file role="doc" name="LICENSE"/>
+      <file role="data" name="MSG00001.bin"/>
+      <file role="src" name="php_wincache.c"/>
+      <file role="src" name="php_wincache.h"/>
+      <file role="src" name="precomp.h"/>
+      <file role="doc" name="README.TXT"/>
+      <file role="src" name="template.rc"/>
+      <file role="src" name="wincache_alloc.c"/>
+      <file role="src" name="wincache_alloc.h"/>
+      <file role="src" name="wincache_aplist.c"/>
+      <file role="src" name="wincache_aplist.h"/>
+      <file role="src" name="wincache_debug.c"/>
+      <file role="src" name="wincache_debug.h"/>
+      <file role="src" name="wincache_dummy_etw.h"/>
+      <file role="src" name="wincache_error.c"/>
+      <file role="src" name="wincache_error.h"/>
+      <file role="src" name="wincache_etw.h"/>
+      <file role="src" name="wincache_etw.man"/>
+      <file role="src" name="wincache_etw.rc"/>
+      <file role="data" name="wincache_etwTEMP.bin"/>
+      <file role="src" name="wincache_fcache.c"/>
+      <file role="src" name="wincache_fcache.h"/>
+      <file role="src" name="wincache_fcnotify.c"/>
+      <file role="src" name="wincache_fcnotify.h"/>
+      <file role="src" name="wincache_filemap.c"/>
+      <file role="src" name="wincache_filemap.h"/>
+      <file role="src" name="wincache_lock.c"/>
+      <file role="src" name="wincache_lock.h"/>
+      <file role="src" name="wincache_rplist.c"/>
+      <file role="src" name="wincache_rplist.h"/>
+      <file role="src" name="wincache_session.h"/>
+      <file role="src" name="wincache_session.c"/>
+      <file role="src" name="wincache_utils.c"/>
+      <file role="src" name="wincache_utils.h"/>
+      <file role="src" name="wincache_zvcache.h"/>
+      <file role="src" name="wincache_zvcache.c"/>
+      <file role="php" name="wincache.php"/>
+      <dir role="test" name="tests">
+        <file role="test" name="skipif.inc"/>
+        <file role="test" name="wincache_001.phpt"/>
+        <file role="test" name="wincache_002.phpt"/>
+        <file role="test" name="wincache_003.phpt"/>
+        <file role="test" name="wincache_004.phpt"/>
+        <file role="test" name="wincache_004_require.php"/>
+        <file role="test" name="wincache_005.phpt"/>
+        <file role="test" name="wincache_006.phpt"/>
+        <file role="test" name="wincache_007.phpt"/>
+        <file role="test" name="wincache_require.php"/>
+        <file role="test" name="wincache_reroute.phpt"/>
+        <file role="test" name="wincache_ucache_array.phpt"/>
+        <file role="test" name="wincache_ucache_cas.phpt"/>
+        <file role="test" name="wincache_ucache_errors.phpt"/>
+        <file role="test" name="wincache_ucache_inc.phpt"/>
+        <file role="test" name="wincache_ucache_nested_arrays.phpt"/>
+        <file role="test" name="wincache_ucache_reference.phpt"/>
+        <file role="test" name="wincache_ucache_serialization.phpt"/>
+        <file role="test" name="wincache_ucache_set_array.phpt"/>
+        <file role="test" name="wincache_ucache_string.phpt"/>
+        <file role="test" name="wincache_ucache_unset_string.phpt"/>
+        <dir role="test" name="bar">
+          <file role="test" name="wincache_005_2.php"/>
+        </dir>
+        <dir role="test" name="foo">
+          <file role="test" name="wincache_005_1.php"/>
+        </dir>
+      </dir>
+    </dir>
+  </contents>
+  <dependencies>
+    <required>
+      <php>
+        <min>7.0.0</min>
+      </php>
+      <pearinstaller>
+        <min>1.4.0</min>
+      </pearinstaller>
+    </required>
+  </dependencies>
+  <providesextension>wincache</providesextension>
+  <extsrcrelease/>
+
+  <changelog>
+
+<!-- Cut and paste from this blank item, and then copy in the stuff from the
+     current package (above).
+
+    <release>
+      <date>1980-01-01</date>
+      <version>
+        <release>0.0.0.0</release>
+        <api>2.0.0</api>
+      </version>
+      <stability>
+        <release>stable|beta|alpha|devl|snapshot</release>
+        <api>stable|beta|alpha|devl|snapshot</api>
+      </stability>
+      <notes>
+0.0.0.0:
+- Item one
+- Item two
+      </notes>
+    </release>
+-->
+    <release>
+      <date>2016-06-21</date>
+      <version>
+        <release>2.0.0.7</release>
+        <api>2.0.0</api>
+      </version>
+      <stability>
+        <release>stable</release>
+        <api>stable</api>
+      </stability>
+      <notes>
+2.0.0.7:
+- choose better user cache table size at startup
+- improve detection of wincache segment corruption during allocate_memory
+      </notes>
+    </release>
+    <release>
+      <date>2016-02-18</date>
+      <version>
+        <release>2.0.0.6</release>
+        <api>2.0.0</api>
+      </version>
+      <stability>
+        <release>stable</release>
+        <api>stable</api>
+      </stability>
+      <notes>
+2.0.0.6:
+- Fix bug 71580 session_regenerate_id(): Failed to create(read) session
+- Code cleanup in file change notification
+- Ignore change notifications for new files, since they won't exist in the file cache
+      </notes>
+    </release>
+    <release>
+      <date>2016-01-26</date>
+      <version>
+        <release>2.0.0.5</release>
+        <api>2.0.0</api>
+      </version>
+      <stability>
+        <release>beta</release>
+        <api>stable</api>
+      </stability>
+      <notes>
+2.0.0.5:
+- Fix array refcount for user and session caches
+- Fix string refcount for array keys
+- Fix IS_REFERENCE zvals passed to wincache_ucache_[inc|dec] functions
+- Minor bug fixes and tweaks
+      </notes>
+    </release>
+    <release>
+      <date>2015-10-30</date>
+      <version>
+        <release>2.0.0.2</release>
+        <api>2.0.0</api>
+      </version>
+      <stability>
+        <release>beta</release>
+        <api>stable</api>
+      </stability>
+      <notes>
+2.0.0.0:
+- PHP7 Support
+- x64 Support
+- Remove opcode cache support
+- Remove custom SRW locking
+- Remove unused settings
+- Enforce NTS-only build
+- Comment clean up
+- Minor bug fixes and tweaks
+      </notes>
+    </release>
+    <release>
+      <date>2015-03-23</date>
+      <version>
+        <release>1.3.7.4</release>
+        <api>1.3.0</api>
+      </version>
+      <stability>
+        <release>stable</release>
+        <api>stable</api>
+      </stability>
+      <notes>
 1.3.7.4:
 - Fix uninitialized variable issue that leads to av (null zend_error_cb).
 - Increase the timeout used to wait for other processes to finish initialization.
@@ -51,63 +246,9 @@
 - Move shared memory segments out of the Windows System Pagefile. Added new configuration setting wincache.filemapdir to control where the temp files are created.
 - Refine VM base address selection for shared memory maps.
 - Ensure all named objects created with Global prefix when apppoolid is set.
-  </notes>
-  <contents>
-    <dir name="/">
-      <file role="doc" name="config.w32"/>
-      <file role="doc" name="INSTALL"/>
-      <file role="doc" name="LICENSE"/>
-      <file role="src" name="php_wincache.c"/>
-      <file role="src" name="php_wincache.h"/>
-      <file role="src" name="precomp.h"/>
-      <file role="src" name="template.rc"/>
-      <file role="src" name="wincache_alloc.c"/>
-      <file role="src" name="wincache_alloc.h"/>
-      <file role="src" name="wincache_aplist.c"/>
-      <file role="src" name="wincache_aplist.h"/>
-      <file role="src" name="wincache_debug.c"/>
-      <file role="src" name="wincache_debug.h"/>
-      <file role="src" name="wincache_error.c"/>
-      <file role="src" name="wincache_error.h"/>
-      <file role="src" name="wincache_fcache.c"/>
-      <file role="src" name="wincache_fcache.h"/>
-      <file role="src" name="wincache_fcnotify.c"/>
-      <file role="src" name="wincache_fcnotify.h"/>
-      <file role="src" name="wincache_filemap.c"/>
-      <file role="src" name="wincache_filemap.h"/>
-      <file role="src" name="wincache_lock.c"/>
-      <file role="src" name="wincache_lock.h"/>
-      <file role="src" name="wincache_ocache.c"/>
-      <file role="src" name="wincache_ocache.h"/>
-      <file role="src" name="wincache_opcopy.c"/>
-      <file role="src" name="wincache_opcopy.h"/>
-      <file role="src" name="wincache_rplist.c"/>
-      <file role="src" name="wincache_rplist.h"/>
-      <file role="src" name="wincache_session.h"/>
-      <file role="src" name="wincache_session.c"/>
-      <file role="src" name="wincache_string.c"/>
-      <file role="src" name="wincache_string.h"/>
-      <file role="src" name="wincache_utils.c"/>
-      <file role="src" name="wincache_utils.h"/>
-      <file role="src" name="wincache_zvcache.h"/>
-      <file role="src" name="wincache_zvcache.c"/>
-      <file role="php" name="wincache.php"/>
-    </dir>
-  </contents>
-  <dependencies>
-    <required>
-      <php>
-        <min>5.2.0</min>
-      </php>
-      <pearinstaller>
-        <min>1.4.0</min>
-      </pearinstaller>
-    </required>
-  </dependencies>
-  <providesextension>wincache</providesextension>
-  <extsrcrelease/>
+      </notes>
+    </release>
 
-  <changelog>
     <release>
       <date>2015-01-10</date>
       <version>

@@ -28,6 +28,7 @@
    | Module: precomp.h                                                                            |
    +----------------------------------------------------------------------------------------------+
    | Author: Kanwaljeet Singla <ksingla@microsoft.com>                                            |
+   | Updated: Eric Stenson <ericsten@microsoft.com>                                               |
    +----------------------------------------------------------------------------------------------+
 */
 
@@ -35,15 +36,11 @@
 #define _PRECOMP_H_
 
 #define PHP_WINCACHE_EXTNAME   "wincache"
-#define PHP_WINCACHE_VERSION    "1.3.7.7"
+#define PHP_WINCACHE_VERSION    "2.0.0.8"
 #define PHP_WINCACHE_VERSION_LEN (sizeof(PHP_WINCACHE_VERSION)-1)
-
-#define GLOBAL_SCOPE_PREFIX     "Global\\"
-#define GLOBAL_SCOPE_PREFIX_LEN (sizeof(GLOBAL_SCOPE_PREFIX)-1)
 
 /* comment following line for release builds */
 /* #define WINCACHE_DEBUG */
-/* #define DEBUG_DUMP_OPARRAY */
 
 #ifdef PHP_WIN32
  #define PHP_WINCACHE_API __declspec(dllexport)
@@ -63,7 +60,7 @@
 #include "php_ini.h"
 #include "sapi.h"
 #include "ext/standard/info.h"
-#include "ext/standard/php_smart_str.h"
+#include "zend_smart_str.h"
 #include "ext/session/php_session.h"
 #include "zend_extensions.h"
 #include "php_open_temporary_file.h"
@@ -75,33 +72,6 @@
 
 #define XSTRVER2(maj, min)             #maj "." #min
 #define STRVER2(maj, min)              XSTRVER2(maj, min)
-
-#if PHP_VERSION_ID < 50300
- #define PHP_VERSION_52
-#endif
-
-#if ZEND_MODULE_API_NO >= 20131226
-/* Zend added CG(interened_empty_string) in 20131226 */
-#define ZEND_ENGINE_2_6_1
-#endif
-#if ZEND_MODULE_API_NO >= 20131106
-#define ZEND_ENGINE_2_6
-#endif
-#if ZEND_MODULE_API_NO >= 20121204
-#define ZEND_ENGINE_2_5
-#endif
-#if ZEND_MODULE_API_NO >= 20100409
-#define ZEND_ENGINE_2_4
-#endif
-#if ZEND_MODULE_API_NO > 20060613
-#define ZEND_ENGINE_2_3
-#endif
-#if ZEND_MODULE_API_NO > 20050922
-#define ZEND_ENGINE_2_2
-#endif
-#if ZEND_MODULE_API_NO > 20050921
-#define ZEND_ENGINE_2_1
-#endif
 
 #ifdef _ASSERT
  #undef _ASSERT
@@ -123,6 +93,14 @@
 # define strcpy_s(src, size, dst) strcpy(src, dst)
 #endif
 
+#if PHP_API_VERSION >= 20180731
+# define PHP_73_API
+#endif
+
+#if ZEND_MODULE_API_NO >= 20190128
+typedef unsigned long ulong;
+#endif
+
 #define CACHE_TYPE_FILELIST        1
 #define CACHE_TYPE_RESPATHS        2
 #define CACHE_TYPE_FILECONTENT     3
@@ -133,12 +111,9 @@
 
 #define APLIST_TYPE_INVALID        255
 #define APLIST_TYPE_GLOBAL         0
-#define APLIST_TYPE_OPCODE_LOCAL   1
 
 #define NUM_FILES_MINIMUM          1024
 #define NUM_FILES_MAXIMUM          16384
-#define OCACHE_SIZE_MINIMUM        15
-#define OCACHE_SIZE_MAXIMUM        255
 #define FCACHE_SIZE_MINIMUM        5
 #define FCACHE_SIZE_MAXIMUM        255
 #define ZCACHE_SIZE_MINIMUM        5
@@ -151,8 +126,6 @@
 #define FCHECK_FREQ_MAXIMUM        300
 #define TTL_VALUE_MINIMUM          60
 #define TTL_VALUE_MAXIMUM          7200
-#define INTERNED_SIZE_MINIMUM      4
-#define INTERNED_SIZE_MAXIMUM      32
 
 #define FIVE_SECOND_WAIT           5000
 #define MAX_INIT_EVENT_WAIT        30000
@@ -163,17 +136,12 @@
 #include "wincache_lock.h"
 #include "wincache_filemap.h"
 #include "wincache_alloc.h"
-#include "wincache_ocache.h"
-#include "wincache_opcopy.h"
 #include "wincache_fcnotify.h"
 #include "wincache_fcache.h"
 #include "wincache_rplist.h"
 #include "wincache_aplist.h"
 #include "wincache_zvcache.h"
 #include "wincache_session.h"
-#ifdef ZEND_ENGINE_2_4
-#include "wincache_string.h"
-#endif /* ZEND_ENGINE_2_4 */
 
 #if (_MSC_VER >= 1700)
 #include "wincache_etw.h"

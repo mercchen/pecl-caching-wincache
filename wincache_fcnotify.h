@@ -69,7 +69,7 @@ struct fcnotify_value
 typedef struct fcnotify_header fcnotify_header;
 struct fcnotify_header
 {
-    unsigned int            rdcount;       /* Reader count for shared lock */
+    unsigned int            last_owner;    /* PID of last process to acquire the fcnotify_context lock */
     unsigned int            itemcount;     /* Folders count which have active listeners */
     unsigned int            valuecount;    /* Total number of entries in entries */
     size_t                  values[1];     /* HashTable for fcnotify_value entries */
@@ -114,7 +114,7 @@ struct fcnotify_info
 
 extern int  fcnotify_create(fcnotify_context ** ppnotify);
 extern void fcnotify_destroy(fcnotify_context * pnotify);
-extern int  fcnotify_initialize(fcnotify_context * pnotify, unsigned short islocal, void * paplist, alloc_context * palloc, unsigned int filecount TSRMLS_DC);
+extern int  fcnotify_initialize(fcnotify_context * pnotify, unsigned short islocal, void * paplist, alloc_context * palloc, unsigned int filecount);
 extern void fcnotify_initheader(fcnotify_context * pnotify, unsigned int filecount);
 extern void fcnotify_terminate(fcnotify_context * pnotify);
 

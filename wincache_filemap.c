@@ -28,6 +28,7 @@
    | Module: wincache_filemap.c                                                                   |
    +----------------------------------------------------------------------------------------------+
    | Author: Kanwaljeet Singla <ksingla@microsoft.com>                                            |
+   | Updated: Eric Stenson <ericsten@microsoft.com>                                               |
    +----------------------------------------------------------------------------------------------+
 */
 
@@ -36,12 +37,12 @@
 #define FILEMAP_INFO_HEADER_SIZE ALIGNQWORD(sizeof(filemap_information_header))
 #define FILEMAP_INFO_ENTRY_SIZE  ALIGNQWORD(sizeof(filemap_information_entry))
 
-static unsigned int getppid(TSRMLS_D);
-static int create_rwlock(char * lockname, lock_context ** pplock TSRMLS_DC);
+static unsigned int getppid();
+static int create_rwlock(char * lockname, lock_context ** pplock);
 static void destroy_rwlock(lock_context * plock);
 static int create_file_mapping(char * name, char * shmfilepath, unsigned char isfirst,size_t size, HANDLE * pshmfile, unsigned int * pexisting, HANDLE * pmap);
 static void * map_viewof_file(HANDLE handle, void * baseaddr);
-static int create_information_filemap(filemap_information ** ppinfo TSRMLS_DC);
+static int create_information_filemap(filemap_information ** ppinfo);
 static void destroy_information_filemap(filemap_information * pinfo);
 
 /* Array of filemap prefixes, in the same order & value as FILEMAP_TYPE_*
@@ -56,12 +57,20 @@ static char * g_filemap_prefix[] = {
     FILEMAP_SESSZVALS_PREFIX,   /* FILEMAP_TYPE_SESSZVALS   */
 };
 
+#ifdef _WIN64
+#define FILEMAP_PREFIX_FORMAT           "%s_%u_%u_x64"
+#define FILEMAP_NAMESALT_PREFIX_FORMAT  "%s_%u_%s_%u_x64"
+#else  /* not _WIN64 */
+#define FILEMAP_PREFIX_FORMAT           "%s_%u_%u"
+#define FILEMAP_NAMESALT_PREFIX_FORMAT  "%s_%u_%s_%u"
+#endif /* _WIN64 */
+
 /* Global information containing information */
 /* about all the memory maps which got created */
 unsigned short gfilemapid = 1;
 
 /* private method to get parent process id */
-static unsigned int getppid(TSRMLS_D)
+static unsigned int getppid()
 {
     int            result    = NONFATAL;
     unsigned int   pid       = 0;
@@ -88,7 +97,7 @@ static unsigned int getppid(TSRMLS_D)
     }
 
     /* Use CRC of user provided apppoolid as ppid if available */
-    poolpid = utils_apoolpid(TSRMLS_C);
+    poolpid = utils_apoolpid();
     if(poolpid != -1)
     {
         WCG(parentpid) = poolpid;
@@ -185,17 +194,17 @@ static int build_filemap_name(
     int ret;
     if (namesalt == NULL)
     {
-        ret = _snprintf_s(dest, dest_size, dest_size - 1, "%s_%u_%u", get_filemap_prefix(fmaptype), cachekey, pid);
+        ret = _snprintf_s(dest, dest_size, dest_size - 1, FILEMAP_PREFIX_FORMAT, get_filemap_prefix(fmaptype), cachekey, pid);
     }
     else
     {
-        ret = _snprintf_s(dest, dest_size, dest_size - 1, "%s_%u_%s_%u", get_filemap_prefix(fmaptype), cachekey, namesalt, pid);
+        ret = _snprintf_s(dest, dest_size, dest_size - 1, FILEMAP_NAMESALT_PREFIX_FORMAT, get_filemap_prefix(fmaptype), cachekey, namesalt, pid);
     }
 
     return ret;
 }
 
-static int create_rwlock(char * lockname, lock_context ** pplock TSRMLS_DC)
+static int create_rwlock(char * lockname, lock_context ** pplock)
 {
     int            result = NONFATAL;
     lock_context * plock  = NULL;
@@ -214,7 +223,7 @@ static int create_rwlock(char * lockname, lock_context ** pplock TSRMLS_DC)
         goto Finished;
     }
 
-    result = lock_initialize(plock, lockname, 1, LOCK_TYPE_SHARED, LOCK_USET_XREAD_XWRITE, NULL TSRMLS_CC);
+    result = lock_initialize(plock, lockname, 1, LOCK_TYPE_SHARED, NULL);
     if(FAILED(result))
     {
         goto Finished;
@@ -278,13 +287,15 @@ static int create_file_mapping(
     unsigned int    attributes = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS;
     unsigned int    sharemode  = FILE_SHARE_READ | FILE_SHARE_WRITE;
     unsigned int    access     = GENERIC_READ | GENERIC_WRITE;
-    unsigned char   globalName[MAX_PATH+1];
+    ULARGE_INTEGER  li         = { 0 };
 
     dprintverbose("start create_file_mapping");
 
     _ASSERT(name != NULL);
     _ASSERT(size >  0);
     _ASSERT(pmap != NULL);
+
+    li.QuadPart = (ULONGLONG)size; /* safely handle size_t on x64 */
 
     /* If a shmfilepath is passed, map the file pointed by path */
     if(shmfilepath != NULL)
@@ -309,12 +320,27 @@ static int create_file_mapping(
             goto Finished;
         }
 
-        /* If file already exists, mark existing so that initialization is skipped */
+        /* If file already exists, and is valid, mark existing so that initialization is skipped */
         if(GetLastError() == ERROR_ALREADY_EXISTS)
         {
-            isexisting = 1;
+            BY_HANDLE_FILE_INFORMATION byFileInfo;
 
-            /* TBD?? Check file size and error out if its greater than size */
+            if (!GetFileInformationByHandle(filehandle, &byFileInfo))
+            {
+                dprintimportant("error while validating existing file: %d", GetLastError());
+                goto Finished;
+            }
+
+            if (byFileInfo.nFileSizeHigh == li.HighPart &&
+                byFileInfo.nFileSizeLow  == li.LowPart)
+            {
+                isexisting = 1;
+            }
+            else
+            {
+                dprintverbose("existing file size is incorrect.  re-initalizing");
+            }
+
             /* TBD?? If file never got initialized properly, mark isexisting = 0 */
             /* TBD?? Detect memory corruption. Mark isexisting = 0 */
         }
@@ -327,6 +353,7 @@ static int create_file_mapping(
                 /* TODO: If the ACL'ing fails, we should close the file and fall */
                 /* back to using the system page file. */
                 CloseHandle(filehandle);
+                (void)DeleteFile(shmfilepath);
                 filehandle = INVALID_HANDLE_VALUE;
 
                 dprintimportant( "create_file_mapping[%d]: failed to set acl on %s (%d).",
@@ -337,19 +364,8 @@ static int create_file_mapping(
         }
     }
 
-    if (WCG(apppoolid))
-    {
-        /* prefix the name with "Global\", to ensure the named filemap is in the global space. */
-        if ( -1 == sprintf_s(globalName, MAX_PATH+1, GLOBAL_SCOPE_PREFIX "%s", name) )
-        {
-            result = FATAL_FILEMAP_CREATEFILEMAP;
-            goto Finished;
-        }
-        name = globalName;
-    }
-
     /* Call CreateFileMapping to create new or open existing file mapping object */
-    maphandle = CreateFileMapping(filehandle, NULL, PAGE_READWRITE, 0, size, name);
+    maphandle = CreateFileMapping(filehandle, NULL, PAGE_READWRITE, li.HighPart, li.LowPart, name);
 
     /* handle value null means a fatal error */
     if(maphandle == NULL)
@@ -506,20 +522,19 @@ Finished:
     return pBaseTemp;
 }
 
-static int create_information_filemap(filemap_information ** ppinfo TSRMLS_DC)
+static int create_information_filemap(filemap_information ** ppinfo)
 {
     int                         result      = NONFATAL;
     int                         index       = 0;
-    int                         size        = 0;
-    int                         namelen     = 0;
+    int                         infonamelen = 0;
+    size_t                      size        = 0;
+    size_t                      namelen     = 0;
     filemap_information *       pinfo       = NULL;
     filemap_information_entry * pentry      = NULL;
     unsigned char               isfirst     = 1;
     unsigned char               islocked    = 0;
     unsigned int                isexisting  = 0;
     DWORD                       ret         = 0;
-    char *                      scopePrefix = "";
-    char *                      sectionName = NULL;
 
     dprintverbose("start create_information_filemap");
 
@@ -540,11 +555,11 @@ static int create_information_filemap(filemap_information ** ppinfo TSRMLS_DC)
     pinfo->infonlen  = 0;
     pinfo->header    = NULL;
     pinfo->hinitdone = NULL;
-    pinfo->hrwlock   = NULL;
+    pinfo->hlock     = NULL;
 
     /* First thing to do is create the lock */
     /* As the lock is xread_xwrite, doing this before mapping is fine */
-    result = create_rwlock("FILEMAP_INFO_HRWLOCK", &pinfo->hrwlock TSRMLS_CC);
+    result = create_rwlock("FILEMAP_INFO_HRWLOCK", &pinfo->hlock);
     if(FAILED(result))
     {
         goto Finished;
@@ -561,14 +576,6 @@ static int create_information_filemap(filemap_information ** ppinfo TSRMLS_DC)
         namelen += strlen(WCG(namesalt)) + 1;
     }
 
-    /* If we're on an app pool, we need to create all named objects in */
-    /* the Global scope. */
-    if (WCG(apppoolid))
-    {
-        scopePrefix = GLOBAL_SCOPE_PREFIX;
-        namelen += GLOBAL_SCOPE_PREFIX_LEN;
-    }
-
     /* Allocate memory to keep name of the information filemap */
     pinfo->infoname = (char *)alloc_pemalloc(namelen);
     if(pinfo->infoname == NULL)
@@ -582,14 +589,20 @@ static int create_information_filemap(filemap_information ** ppinfo TSRMLS_DC)
     /* Create name as FILE_INFORMATION_PREFIX_<ppid> */
     if(WCG(namesalt) == NULL)
     {
-        _snprintf_s(pinfo->infoname, namelen, namelen - 1, "%s%s_%u", scopePrefix, FILEMAP_INFORMATION_PREFIX, WCG(fmapgdata)->ppid);
+        infonamelen = _snprintf_s(pinfo->infoname, namelen, namelen - 1, "%s_%u", FILEMAP_INFORMATION_PREFIX, WCG(fmapgdata)->ppid);
     }
     else
     {
-        _snprintf_s(pinfo->infoname, namelen, namelen - 1, "%s%s_%s_%u", scopePrefix, FILEMAP_INFORMATION_PREFIX, WCG(namesalt), WCG(fmapgdata)->ppid);
+        infonamelen = _snprintf_s(pinfo->infoname, namelen, namelen - 1, "%s_%s_%u", FILEMAP_INFORMATION_PREFIX, WCG(namesalt), WCG(fmapgdata)->ppid);
     }
 
-    pinfo->infonlen = strlen(pinfo->infoname);
+    if (infonamelen < 0)
+    {
+        result = FATAL_INVALID_DATA;
+        goto Finished;
+    }
+
+    pinfo->infonlen = infonamelen;
 
     result = utils_create_init_event(pinfo->infoname, "_FCACHE_INIT", &pinfo->hinitdone, &isfirst);
     if (FAILED(result))
@@ -604,18 +617,8 @@ static int create_information_filemap(filemap_information ** ppinfo TSRMLS_DC)
     /* Adding two aligned qwords sizes will produce qword */
     size = FILEMAP_INFO_HEADER_SIZE + (FILEMAP_MAX_COUNT * FILEMAP_INFO_ENTRY_SIZE);
 
-    if (WCG(apppoolid))
-    {
-        /* NOTE: We need to pass the un-Global'd prefixed name to create_file_mapping. */
-        sectionName = &pinfo->infoname[GLOBAL_SCOPE_PREFIX_LEN];
-    }
-    else
-    {
-        sectionName = pinfo->infoname;
-    }
-
     /* shmfilepath = NULL, pfilehandle = NULL, pexisting = NULL */
-    result = create_file_mapping(sectionName, NULL, isfirst, size, NULL, &isexisting, &pinfo->hinfomap);
+    result = create_file_mapping(pinfo->infoname, NULL, isfirst, size, NULL, &isexisting, &pinfo->hinfomap);
     if(FAILED(result))
     {
         goto Finished;
@@ -638,7 +641,7 @@ static int create_information_filemap(filemap_information ** ppinfo TSRMLS_DC)
     /* Initialize if its not already initialized */
     if(isfirst)
     {
-        lock_writelock(pinfo->hrwlock);
+        lock_lock(pinfo->hlock);
 
         /* This is the first process which got the pointer */
         /* to information filemap. This should initialize header. */
@@ -660,7 +663,7 @@ static int create_information_filemap(filemap_information ** ppinfo TSRMLS_DC)
         ReleaseMutex(pinfo->hinitdone);
         islocked = 0;
 
-        lock_writeunlock(pinfo->hrwlock);
+        lock_unlock(pinfo->hlock);
     }
     else
     {
@@ -697,12 +700,12 @@ Finished:
                 pinfo->hinfomap = NULL;
             }
 
-            if(pinfo->hrwlock != NULL)
+            if(pinfo->hlock != NULL)
             {
-                lock_terminate(pinfo->hrwlock);
-                lock_destroy(pinfo->hrwlock);
+                lock_terminate(pinfo->hlock);
+                lock_destroy(pinfo->hlock);
 
-                pinfo->hrwlock = NULL;
+                pinfo->hlock = NULL;
             }
 
             if(pinfo->infoname != NULL)
@@ -750,12 +753,12 @@ static void destroy_information_filemap(filemap_information * pinfo)
             pinfo->hinfomap = NULL;
         }
 
-        if(pinfo->hrwlock != NULL)
+        if(pinfo->hlock != NULL)
         {
-            lock_terminate(pinfo->hrwlock);
-            lock_destroy(pinfo->hrwlock);
+            lock_terminate(pinfo->hlock);
+            lock_destroy(pinfo->hlock);
 
-            pinfo->hrwlock = NULL;
+            pinfo->hlock = NULL;
         }
 
         if(pinfo->infoname != NULL)
@@ -782,7 +785,7 @@ static void destroy_information_filemap(filemap_information * pinfo)
 }
 
 /* Global initializer which should be called once per process */
-int filemap_global_initialize(TSRMLS_D)
+int filemap_global_initialize()
 {
     int                      result    = NONFATAL;
     filemap_global_context * fgcontext = NULL;
@@ -805,13 +808,13 @@ int filemap_global_initialize(TSRMLS_D)
 
     /* Set default values of structure members */
     fgcontext->pid  = GetCurrentProcessId();
-    fgcontext->ppid = getppid(TSRMLS_C);
+    fgcontext->ppid = getppid();
     fgcontext->info = NULL;
 
     /* Set global as soon as pid and ppid are set */
     WCG(fmapgdata) = fgcontext;
 
-    result = create_information_filemap(&fgcontext->info TSRMLS_CC);
+    result = create_information_filemap(&fgcontext->info);
     if(FAILED(result))
     {
         goto Finished;
@@ -845,7 +848,7 @@ Finished:
 }
 
 /* Terminate global information including information filemap */
-void filemap_global_terminate(TSRMLS_D)
+void filemap_global_terminate()
 {
     dprintverbose("start filemap_global_terminate");
 
@@ -867,7 +870,7 @@ void filemap_global_terminate(TSRMLS_D)
 }
 
 /* API to get current process ID */
-unsigned int filemap_getpid(TSRMLS_D)
+unsigned int filemap_getpid()
 {
     _ASSERT(WCG(fmapgdata) != NULL);
     return WCG(fmapgdata)->pid;
@@ -876,7 +879,7 @@ unsigned int filemap_getpid(TSRMLS_D)
 /* API tp get the parent process ID */
 /* Use parent process identifier to create */
 /* separate caches for processes under a process */
-unsigned int filemap_getppid(TSRMLS_D)
+unsigned int filemap_getppid()
 {
     _ASSERT(WCG(fmapgdata) != NULL);
     return WCG(fmapgdata)->ppid;
@@ -937,7 +940,7 @@ void filemap_destroy(filemap_context * pfilemap)
     return;
 }
 
-int filemap_initialize(filemap_context * pfilemap, unsigned short fmaptype, unsigned short cachekey, unsigned short fmclass, unsigned int size_mb, unsigned char isfirst, char * shmfilepath TSRMLS_DC)
+int filemap_initialize(filemap_context * pfilemap, unsigned short fmaptype, unsigned short cachekey, unsigned short fmclass, unsigned int size_mb, unsigned char isfirst, char * shmfilepath)
 {
     int           result  = NONFATAL;
     unsigned int  ffree   = 0;
@@ -981,7 +984,7 @@ int filemap_initialize(filemap_context * pfilemap, unsigned short fmaptype, unsi
     if(fmclass != FILEMAP_MAP_LRANDOM)
     {
         /* Check if fmaptype is already there in the list of filemaps available */
-        lock_writelock(pinfo->hrwlock);
+        lock_lock(pinfo->hlock);
         flock = 1;
 
         pentry = (filemap_information_entry *)((char *)pinfoh + FILEMAP_INFO_HEADER_SIZE);
@@ -1039,8 +1042,8 @@ int filemap_initialize(filemap_context * pfilemap, unsigned short fmaptype, unsi
 
             pentry->size     = size;
             pentry->mapcount = 0;
-            pentry->cpid     = filemap_getpid(TSRMLS_C);
-            pentry->opid     = filemap_getpid(TSRMLS_C);
+            pentry->cpid     = filemap_getpid();
+            pentry->opid     = filemap_getpid();
             pentry->mapaddr  = NULL;
 
             if (fmclass == FILEMAP_MAP_SFIXED)
@@ -1125,8 +1128,8 @@ int filemap_initialize(filemap_context * pfilemap, unsigned short fmaptype, unsi
 
         pentry->size     = size;
         pentry->mapcount = 0;
-        pentry->cpid     = filemap_getpid(TSRMLS_C);
-        pentry->opid     = filemap_getpid(TSRMLS_C);
+        pentry->cpid     = filemap_getpid();
+        pentry->opid     = filemap_getpid();
         pentry->mapaddr  = NULL;
 
         /* This filemap is local only */
@@ -1173,7 +1176,7 @@ Finished:
             }
         }
 
-        lock_writeunlock(pinfo->hrwlock);
+        lock_unlock(pinfo->hlock);
         flock = 0;
     }
 
@@ -1225,7 +1228,6 @@ void filemap_terminate(filemap_context * pfilemap)
     char * sm_file_path = NULL;
     unsigned short fmaptype = FILEMAP_TYPE_UNUSED;
 
-    TSRMLS_FETCH();
     dprintverbose("start filemap_terminate");
 
     if(pfilemap != NULL)
@@ -1234,7 +1236,7 @@ void filemap_terminate(filemap_context * pfilemap)
         {
             if(!pfilemap->islocal)
             {
-                lock_writelock(WCG(fmapgdata)->info->hrwlock);
+                lock_lock(WCG(fmapgdata)->info->hlock);
 
                 /* Decrement the mapcount */
                 pfilemap->infoentry->mapcount--;
@@ -1258,7 +1260,7 @@ void filemap_terminate(filemap_context * pfilemap)
                     }
                 }
 
-                lock_writeunlock(WCG(fmapgdata)->info->hrwlock);
+                lock_unlock(WCG(fmapgdata)->info->hlock);
             }
             else
             {
@@ -1305,7 +1307,7 @@ void filemap_terminate(filemap_context * pfilemap)
     return;
 }
 
-size_t filemap_getsize(filemap_context * pfilemap TSRMLS_DC)
+size_t filemap_getsize(filemap_context * pfilemap)
 {
     size_t size = 0;
 
@@ -1313,15 +1315,17 @@ size_t filemap_getsize(filemap_context * pfilemap TSRMLS_DC)
 
     _ASSERT(pfilemap != NULL);
 
-    lock_readlock(WCG(fmapgdata)->info->hrwlock);
+    lock_lock(WCG(fmapgdata)->info->hlock);
+
     size = pfilemap->infoentry->size;
-    lock_readunlock(WCG(fmapgdata)->info->hrwlock);
+
+    lock_unlock(WCG(fmapgdata)->info->hlock);
 
     dprintverbose("end filemap_getsize");
     return size;
 }
 
-unsigned int filemap_getcpid(filemap_context * pfilemap TSRMLS_DC)
+unsigned int filemap_getcpid(filemap_context * pfilemap)
 {
     unsigned int cpid = 0;
 
@@ -1329,9 +1333,11 @@ unsigned int filemap_getcpid(filemap_context * pfilemap TSRMLS_DC)
 
     _ASSERT(pfilemap != NULL);
 
-    lock_readlock(WCG(fmapgdata)->info->hrwlock);
+    lock_lock(WCG(fmapgdata)->info->hlock);
+
     cpid = pfilemap->infoentry->cpid;
-    lock_readunlock(WCG(fmapgdata)->info->hrwlock);
+
+    lock_unlock(WCG(fmapgdata)->info->hlock);
 
     dprintverbose("end filemap_getcpid");
 
@@ -1354,12 +1360,11 @@ void filemap_runtest()
     unsigned int                 orig_mapcount    = 0;
     unsigned short               orig_entry_count = 0;
 
-    TSRMLS_FETCH();
     dprintverbose("*** STARTING FILEMAP TESTS ***");
 
     if(WCG(fmapgdata) == NULL)
     {
-       result = filemap_global_initialize(TSRMLS_C);
+       result = filemap_global_initialize();
        if(FAILED(result))
        {
            dprintverbose("filemap_global_initialize failed");
@@ -1380,7 +1385,7 @@ void filemap_runtest()
     _ASSERT(pinfo->hinfomap != NULL);
     _ASSERT(pinfo->infonlen == strlen(pinfo->infoname));
     _ASSERT(pinfo->header   != NULL);
-    _ASSERT(pinfo->hrwlock  != NULL);
+    _ASSERT(pinfo->hlock    != NULL);
 
     pinfoh = pinfo->header;
     _ASSERT(pinfoh != NULL);
@@ -1398,7 +1403,7 @@ void filemap_runtest()
         goto Finished;
     }
 
-    result = filemap_initialize(pfilemap1, FILEMAP_TYPE_FILECONTENT, 58, FILEMAP_MAP_SRANDOM, 20, TRUE, NULL TSRMLS_CC);
+    result = filemap_initialize(pfilemap1, FILEMAP_TYPE_FILECONTENT, 58, FILEMAP_MAP_SRANDOM, 20, TRUE, NULL);
     if(FAILED(result))
     {
         goto Finished;
@@ -1414,8 +1419,8 @@ void filemap_runtest()
     _ASSERT(pentry->cachekey == 58);
     _ASSERT(pentry->size     == 20 * 1024 * 1024);
     _ASSERT(pentry->mapcount == 1);
-    _ASSERT(pentry->cpid     == filemap_getpid(TSRMLS_C));
-    _ASSERT(pentry->opid     == filemap_getpid(TSRMLS_C));
+    _ASSERT(pentry->cpid     == filemap_getpid());
+    _ASSERT(pentry->opid     == filemap_getpid());
     _ASSERT(pentry->mapaddr  != NULL);
 
     _ASSERT(pinfoh->mapcount    == orig_mapcount);
@@ -1427,7 +1432,7 @@ void filemap_runtest()
         goto Finished;
     }
 
-    result = filemap_initialize(pfilemap2, FILEMAP_TYPE_BYTECODES, 59, FILEMAP_MAP_SFIXED, 10, TRUE, NULL TSRMLS_CC);
+    result = filemap_initialize(pfilemap2, FILEMAP_TYPE_BYTECODES, 59, FILEMAP_MAP_SFIXED, 10, TRUE, NULL);
     if(FAILED(result))
     {
         goto Finished;
@@ -1443,8 +1448,8 @@ void filemap_runtest()
     _ASSERT(pentry->cachekey == 59);
     _ASSERT(pentry->size     == 10 * 1024 * 1024);
     _ASSERT(pentry->mapcount == 1);
-    _ASSERT(pentry->cpid     == filemap_getpid(TSRMLS_C));
-    _ASSERT(pentry->opid     == filemap_getpid(TSRMLS_C));
+    _ASSERT(pentry->cpid     == filemap_getpid());
+    _ASSERT(pentry->opid     == filemap_getpid());
     _ASSERT(pentry->mapaddr  != NULL);
 
     _ASSERT(pinfoh->mapcount    == orig_mapcount);
@@ -1467,7 +1472,7 @@ void filemap_runtest()
         goto Finished;
     }
 
-    result = filemap_initialize(pfilemap1, FILEMAP_TYPE_BYTECODES, 58, FILEMAP_MAP_SFIXED, 10, TRUE, NULL TSRMLS_CC);
+    result = filemap_initialize(pfilemap1, FILEMAP_TYPE_BYTECODES, 58, FILEMAP_MAP_SFIXED, 10, TRUE, NULL);
     if(FAILED(result))
     {
         goto Finished;
@@ -1505,7 +1510,7 @@ Finished:
 
     if(initialized == 1)
     {
-        filemap_global_terminate(TSRMLS_C);
+        filemap_global_terminate();
     }
 
     dprintverbose("*** ENDING FILEMAP TESTS ***");

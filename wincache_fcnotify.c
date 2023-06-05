@@ -37,7 +37,11 @@
 #define PROCESS_IS_DEAD               1
 #define FCNOTIFY_VALUE(p, o)          ((fcnotify_value *)alloc_get_cachevalue(p, o))
 #define FCNOTIFY_TERMKEY              ((ULONG_PTR)-1)
-#define SCAVENGER_FREQUENCY           900000
+#ifdef WINCACHE_DEBUG
+#define SCAVENGER_FREQUENCY           (10 * 1000)
+#else /* WINCACHE_DEBUG */
+#define SCAVENGER_FREQUENCY           (900 * 1000)
+#endif /* WINCACHE_DEBUG */
 #define PALIVECHK_FREQUENCY           1000
 
 static unsigned int WINAPI change_notification_thread(void * parg);
@@ -52,7 +56,7 @@ static void listener_refdec(fcnotify_context * pnotify, fcnotify_listen * pliste
 static void destroy_fcnotify_data(fcnotify_context * pnotify, fcnotify_value * pvalue);
 static void add_fcnotify_entry(fcnotify_context * pnotify, unsigned int index, fcnotify_value * pvalue);
 static void remove_fcnotify_entry(fcnotify_context * pnotify, unsigned int index, fcnotify_value * pvalue);
-static int  pidhandles_apply(void * pdestination TSRMLS_DC);
+static int  pidhandles_apply(zval * pdestination);
 static void run_fcnotify_scavenger(fcnotify_context * pnotify);
 static unsigned char process_alive_check(fcnotify_context * pnotify, fcnotify_value * pvalue);
 
@@ -109,7 +113,7 @@ static void WINAPI process_change_notification(fcnotify_context * pnotify, fcnot
     char *                    pfname     = NULL;
     unsigned int              fnlength   = 0;
 
-    dprintverbose("start process_change_notification");
+    dprintverbose("start process_change_notification(%p)", plistener);
 
     _ASSERT(plistener   != NULL);
 
@@ -123,17 +127,28 @@ static void WINAPI process_change_notification(fcnotify_context * pnotify, fcnot
 
     if(bytecount == 0)
     {
+        dprintimportant("process_change_notification: [%s] bytecount = 0, dwerror = %d", plistener->folder_path, dwerror);
+
         if(dwerror == ERROR_ACCESS_DENIED)
         {
             /* Unregister change notification and set plistener to NULL to */
             /* make system set a new change notification system if required */
-            lock_writelock(pnotify->fclock);
+            lock_lock(pnotify->fclock);
+
             unregister_directory_changes(plistener);
             plistener->pfcnvalue->plistener = NULL;
-            lock_writeunlock(pnotify->fclock);
+
+            lock_unlock(pnotify->fclock);
+
+            goto Finished;
         }
 
-        goto Finished;
+        // TODO: Handle ERROR_NOTIFY_ENUM_DIR - change buffer overflowed & we
+        // TODO: missed some changes.
+        // TODO: Not sure what to do here, since we don't have a mechanism for
+        // TODO: invalidating a directory and all files under the directory.
+        // TODO: The aplist cache is only designed to lookup full paths. Any
+        // TODO: other enumeration would be an O(1) traversal of the cache.
     }
     else
     {
@@ -143,45 +158,57 @@ static void WINAPI process_change_notification(fcnotify_context * pnotify, fcnot
             pnitem = pnnext;
             pnnext = (FILE_NOTIFY_INFORMATION *)((char *)pnitem + pnitem->NextEntryOffset);
 
-            fnlength = pnitem->FileNameLength / 2;
-
-            pwchar = (wchar_t *)alloc_pemalloc((fnlength + 1) * sizeof(wchar_t));
-            pfname = (char *)alloc_pemalloc(fnlength + 1);
-            if(pwchar == NULL || pfname == NULL)
+            switch(pnitem->Action)
             {
-                hr = E_OUTOFMEMORY;
-                goto Finished;
-            }
+            case FILE_ACTION_ADDED:
+            case FILE_ACTION_RENAMED_NEW_NAME:
+                /* Ignore added files and new names.  We won't find them in the cache. */
+                break;
 
-            ZeroMemory(pwchar, (fnlength + 1) * sizeof(wchar_t));
-            wcsncpy(pwchar, pnitem->FileName, fnlength);
+            case FILE_ACTION_REMOVED:
+            case FILE_ACTION_MODIFIED:
+            case FILE_ACTION_RENAMED_OLD_NAME:
+            default:
+                fnlength = pnitem->FileNameLength / 2;
 
-            ZeroMemory(pfname, fnlength + 1);
-            if(!WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, pwchar, fnlength, pfname, fnlength, NULL, NULL))
-            {
-                hr = GetLastError();
-                goto Finished;
-            }
+                pwchar = (wchar_t *)alloc_pemalloc((fnlength + 1) * sizeof(wchar_t));
+                pfname = (char *)alloc_pemalloc(fnlength + 1);
+                if(pwchar == NULL || pfname == NULL)
+                {
+                    hr = E_OUTOFMEMORY;
+                    goto Finished;
+                }
 
-            dprintverbose("received change notification for file = %s\\%s", plistener->folder_path, pfname);
-            aplist_mark_changed(pnotify->fcaplist, plistener->folder_path, pfname);
+                ZeroMemory(pwchar, (fnlength + 1) * sizeof(wchar_t));
+                wcsncpy(pwchar, pnitem->FileName, fnlength);
 
-            alloc_pefree(pwchar);
-            pwchar = NULL;
+                ZeroMemory(pfname, fnlength + 1);
+                if(!WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, pwchar, fnlength, pfname, fnlength, NULL, NULL))
+                {
+                    hr = GetLastError();
+                    goto Finished;
+                }
 
-            alloc_pefree(pfname);
-            pfname = NULL;
+                dprintverbose("received change notification for file = %s\\%s, action = %d", plistener->folder_path, pfname, pnitem->Action);
+                aplist_mark_changed(pnotify->fcaplist, plistener->folder_path, pfname);
+
+                alloc_pefree(pwchar);
+                pwchar = NULL;
+
+                alloc_pefree(pfname);
+                pfname = NULL;
+                break;
+            };
 
             if(pnitem == pnnext)
             {
                 break;
             }
         }
-
-        /* register for change notification again */
-        /* If bytecount was 0, no need to register again */
-        register_directory_changes(pnotify, plistener);
     }
+
+    /* register for change notification again */
+    register_directory_changes(pnotify, plistener);
 
 Finished:
 
@@ -197,7 +224,7 @@ Finished:
         pfname = NULL;
     }
 
-    dprintverbose("end process_change_notification");
+    dprintverbose("end process_change_notification(%p)", plistener);
     return;
 }
 
@@ -259,11 +286,17 @@ static unsigned int register_directory_changes(fcnotify_context * pnotify, fcnot
     listener_refinc(plistener);
 
     /* file name, last write, attributes and security change should be delivered */
-    cflags = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SECURITY;
+    cflags = FILE_NOTIFY_CHANGE_FILE_NAME  |
+             FILE_NOTIFY_CHANGE_LAST_WRITE |
+             FILE_NOTIFY_CHANGE_SIZE       |
+             FILE_NOTIFY_CHANGE_ATTRIBUTES |
+             FILE_NOTIFY_CHANGE_SECURITY;
     result = ReadDirectoryChangesW(plistener->folder_handle, &plistener->fninfo, 1024, FALSE, cflags, &bytecount, &plistener->overlapped, NULL);
 
     if(!result)
     {
+        error_setlasterror();
+        dprintverbose("register_directory_changes: failed to register for changes in directory %s (%d)", plistener->folder_path, WCG(lasterror));
         listener_refdec(pnotify, plistener);
     }
 
@@ -276,7 +309,7 @@ static int create_fcnotify_data(fcnotify_context * pnotify, const char * folderp
     int               result    = NONFATAL;
     fcnotify_value *  pvalue    = NULL;
     alloc_context *   palloc    = NULL;
-    unsigned int      pathlen   = 0;
+    size_t            pathlen   = 0;
     char *            paddr     = NULL;
     unsigned int      fshare    = 0;
     unsigned int      flags     = 0;
@@ -423,7 +456,7 @@ static void listener_refdec(fcnotify_context * pnotify, fcnotify_listen * pliste
 {
     if(InterlockedDecrement(&plistener->lrefcount) == 0)
     {
-        lock_writelock(pnotify->fclock);
+        lock_lock(pnotify->fclock);
 
         unregister_directory_changes(plistener);
 
@@ -441,7 +474,7 @@ static void listener_refdec(fcnotify_context * pnotify, fcnotify_listen * pliste
         alloc_pefree(plistener);
         plistener = NULL;
 
-        lock_writeunlock(pnotify->fclock);
+        lock_unlock(pnotify->fclock);
     }
 }
 
@@ -638,7 +671,7 @@ int fcnotify_listenerexists(fcnotify_context *pnotify, const char * folderpath, 
 
     *listenerexists = 0;
 
-    lock_readlock(pnotify->fclock);
+    lock_lock(pnotify->fclock);
 
     /* Look if folder path is present in cache */
     index = utils_getindex(folderpath, pnotify->fcheader->valuecount);
@@ -661,7 +694,7 @@ Finished:
         dprintimportant("failure %d in fcnotify_listenerexists", result);
     }
 
-    lock_readunlock(pnotify->fclock);
+    lock_unlock(pnotify->fclock);
 
     dprintverbose("end fcnotify_listenerexists");
 
@@ -683,7 +716,7 @@ void fcnotify_destroy(fcnotify_context * pnotify)
     return;
 }
 
-int fcnotify_initialize(fcnotify_context * pnotify, unsigned short islocal, void * paplist, alloc_context * palloc, unsigned int filecount TSRMLS_DC)
+int fcnotify_initialize(fcnotify_context * pnotify, unsigned short islocal, void * paplist, alloc_context * palloc, unsigned int filecount)
 {
     int               result   = NONFATAL;
     unsigned short    locktype = LOCK_TYPE_SHARED;
@@ -727,7 +760,7 @@ int fcnotify_initialize(fcnotify_context * pnotify, unsigned short islocal, void
         goto Finished;
     }
 
-    result = lock_initialize(pnotify->fclock, "FILE_CHANGE_NOTIFY", 1, locktype, LOCK_USET_SREAD_XWRITE, &header->rdcount TSRMLS_CC);
+    result = lock_initialize(pnotify->fclock, "FILE_CHANGE_NOTIFY", 1, locktype, &header->last_owner);
     if(FAILED(result))
     {
         goto Finished;
@@ -817,7 +850,7 @@ void fcnotify_initheader(fcnotify_context * pnotify, unsigned int filecount)
      /* This method is called by aplist_initialize which is */
      /* taking care of blocking other processes */
      /* Also rdcount can be safely set to 0 as lock is not active */
-     pheader->rdcount       = 0;
+     pheader->last_owner    = 0;
      pheader->itemcount     = 0;
      pheader->valuecount    = filecount;
      memset((void *)pheader->values, 0, sizeof(size_t) * filecount);
@@ -886,17 +919,17 @@ void fcnotify_terminate(fcnotify_context * pnotify)
     return;
 }
 
-static int pidhandles_apply(void * pdestination TSRMLS_DC)
+static int pidhandles_apply(zval * pdestination)
 {
-    HANDLE *      hprocess = NULL;
+    HANDLE        hprocess = NULL;
     unsigned int  exitcode = 0;
 
     _ASSERT(pdestination != NULL);
-    hprocess = (HANDLE *)pdestination;
+    hprocess = (HANDLE)Z_PTR_P(pdestination);
 
-    if(GetExitCodeProcess(*hprocess, &exitcode) && exitcode != STILL_ACTIVE)
+    if(GetExitCodeProcess(hprocess, &exitcode) && exitcode != STILL_ACTIVE)
     {
-        CloseHandle(*hprocess);
+        CloseHandle(hprocess);
         return ZEND_HASH_APPLY_REMOVE;
     }
     else
@@ -915,7 +948,6 @@ static void run_fcnotify_scavenger(fcnotify_context * pnotify)
     unsigned int      count      = 0;
     HashTable *       phashtable = NULL;
 
-    TSRMLS_FETCH();
     dprintverbose("start run_fcnotify_scavenger");
 
     pheader = pnotify->fcheader;
@@ -925,7 +957,7 @@ static void run_fcnotify_scavenger(fcnotify_context * pnotify)
 
     /* Go through all the entries and remove entries for which refcount is 0 */
     /* Do it only for processes which are dead or if this was the owner pid */
-    lock_writelock(pnotify->fclock);
+    lock_lock(pnotify->fclock);
 
     for(index = 0; index < count; index++)
     {
@@ -945,10 +977,10 @@ static void run_fcnotify_scavenger(fcnotify_context * pnotify)
         }
     }
 
-    lock_writeunlock(pnotify->fclock);
+    lock_unlock(pnotify->fclock);
 
     /* Go through pidhandles table and remove entries for dead processes */
-    zend_hash_apply(phashtable, pidhandles_apply TSRMLS_CC);
+    zend_hash_apply(phashtable, pidhandles_apply);
     pnotify->lscavenge = GetTickCount();
 
     dprintverbose("end run_fcnotify_scavenger");
@@ -960,7 +992,6 @@ static unsigned char process_alive_check(fcnotify_context * pnotify, fcnotify_va
 {
     HashTable *   phashtable = NULL;
     HANDLE        hprocess   = NULL;
-    HANDLE *      phdata     = NULL;
     unsigned char listenp    = PROCESS_IS_ALIVE;
     unsigned int  exitcode   = 0;
     HANDLE        htoken     = NULL;
@@ -980,7 +1011,8 @@ static unsigned char process_alive_check(fcnotify_context * pnotify, fcnotify_va
 
     phashtable = pnotify->pidhandles;
 
-    if(zend_hash_index_find(phashtable, (ulong)ownerpid, (void **)&phdata) == FAILURE)
+    hprocess = (HANDLE)zend_hash_index_find_ptr(phashtable, (zend_ulong)ownerpid);
+    if(hprocess == NULL)
     {
         /* Check if impersonation is enabled */
         /* If it is, get impersonated token and set it back after calling OpenProcess */
@@ -1009,7 +1041,7 @@ static unsigned char process_alive_check(fcnotify_context * pnotify, fcnotify_va
             }
 
             /* Keep the handle around to save OpenProcess calls */
-            zend_hash_index_update(phashtable, (ulong)ownerpid, (void **)&hprocess, sizeof(HANDLE), NULL);
+            zend_hash_index_update_ptr(phashtable, (zend_ulong)ownerpid, (void *)hprocess);
         }
         else
         {
@@ -1019,12 +1051,11 @@ static unsigned char process_alive_check(fcnotify_context * pnotify, fcnotify_va
     }
     else
     {
-        hprocess = *phdata;
         if(GetExitCodeProcess(hprocess, &exitcode) && exitcode != STILL_ACTIVE)
         {
             /* GetProcessId failure means process is gone */
             CloseHandle(hprocess);
-            zend_hash_index_del(phashtable, (ulong)ownerpid);
+            zend_hash_index_del(phashtable, (zend_ulong)ownerpid);
 
             listenp = PROCESS_IS_DEAD;
         }
@@ -1038,7 +1069,7 @@ Finished:
 int fcnotify_check(fcnotify_context * pnotify, const char * filepath, size_t * poffset, unsigned int * pcount)
 {
     int               result     = NONFATAL;
-    unsigned int      flength    = 0;
+    size_t            flength    = 0;
     char *            folderpath = NULL;
     unsigned char     allocated  = 0;
     unsigned int      index      = 0;
@@ -1046,7 +1077,7 @@ int fcnotify_check(fcnotify_context * pnotify, const char * filepath, size_t * p
     fcnotify_value *  pvalue     = NULL;
     fcnotify_value *  ptemp      = NULL;
     fcnotify_value *  pnewval    = NULL;
-    unsigned char     listenp    = 0;
+    unsigned char     listenp    = PROCESS_IS_ALIVE;
     unsigned char     flock      = 0;
     unsigned int      cticks     = 0;
     unsigned int      reusecount = 0;
@@ -1059,9 +1090,9 @@ int fcnotify_check(fcnotify_context * pnotify, const char * filepath, size_t * p
 
     pheader = pnotify->fcheader;
 
-    /* Get a reader lock before reading any values */
-    lock_readlock(pnotify->fclock);
-    flock = 2;
+    /* Acquire lock before reading any values */
+    lock_lock(pnotify->fclock);
+    flock = 1;
 
     if(filepath == NULL)
     {
@@ -1074,19 +1105,11 @@ int fcnotify_check(fcnotify_context * pnotify, const char * filepath, size_t * p
         /* If listener in fcnotify_value is rehooked, force a file change check */
         if(pvalue && pvalue->reusecount != *pcount)
         {
-            /* get a write lock and update pcount */
-            lock_readunlock(pnotify->fclock);
-            flock = 0;
-
-            lock_writelock(pnotify->fclock);
-
             /* Recheck after switching to write lock */
             if(pvalue->reusecount != *pcount)
             {
                 *pcount = pvalue->reusecount;
             }
-
-            lock_writeunlock(pnotify->fclock);
 
             result = WARNING_FCNOTIFY_FORCECHECK;
             goto Finished;
@@ -1131,7 +1154,7 @@ int fcnotify_check(fcnotify_context * pnotify, const char * filepath, size_t * p
         /* If not, make the function hook up change notification again */
         if(pvalue->plistener == NULL && folderpath != NULL)
         {
-            listenp = 1;
+            listenp = PROCESS_IS_DEAD;
             reusecount = pvalue->reusecount;
         }
         else
@@ -1145,7 +1168,7 @@ int fcnotify_check(fcnotify_context * pnotify, const char * filepath, size_t * p
                 reusecount = pvalue->reusecount;
                 InterlockedExchange(&pvalue->palivechk, cticks);
 
-                if(listenp && folderpath == NULL)
+                if(listenp != PROCESS_IS_ALIVE && folderpath == NULL)
                 {
                     folderpath = (char *)(pnotify->fcmemaddr + pvalue->folder_path);
                     index = utils_getindex(folderpath, pheader->valuecount);
@@ -1156,21 +1179,13 @@ int fcnotify_check(fcnotify_context * pnotify, const char * filepath, size_t * p
     else
     {
         /* If folder is not even there yet, add process listener */
-        listenp = 1;
+        listenp = PROCESS_IS_DEAD;
     }
-
-    lock_readunlock(pnotify->fclock);
-    flock = 0;
 
     /* If folder is not there, register for change notification */
     /* and add the folder to the hashtable */
-    if(listenp)
+    if(listenp != PROCESS_IS_ALIVE && folderpath != NULL)
     {
-        lock_writelock(pnotify->fclock);
-        flock = 1;
-
-        _ASSERT(folderpath != NULL);
-
         /* Check again to make sure no one else already registered */
         result = findfolder_in_cache(pnotify, folderpath, index, &ptemp);
         if(FAILED(result))
@@ -1196,7 +1211,6 @@ int fcnotify_check(fcnotify_context * pnotify, const char * filepath, size_t * p
         {
             _ASSERT(pvalue == NULL);
 
-            /* Doing create_fcnotify_data inside write lock to keep things simpler */
             result = create_fcnotify_data(pnotify, folderpath, &ptemp);
             if(FAILED(result))
             {
@@ -1216,9 +1230,6 @@ int fcnotify_check(fcnotify_context * pnotify, const char * filepath, size_t * p
 
         *poffset = ((char *)pvalue - pnotify->fcmemaddr);
         *pcount  = pvalue->reusecount;
-
-        lock_writeunlock(pnotify->fclock);
-        flock = 0;
     }
     else
     {
@@ -1226,21 +1237,22 @@ int fcnotify_check(fcnotify_context * pnotify, const char * filepath, size_t * p
         /* offset if this is a first call to fcnotify_check */
         if(pvalue != NULL && filepath != NULL)
         {
-            lock_writelock(pnotify->fclock);
-
             pvalue->refcount++;
 
             *poffset = ((char *)pvalue - pnotify->fcmemaddr);
             *pcount  = pvalue->reusecount;
-
-            lock_writeunlock(pnotify->fclock);
         }
     }
 
     /* Run scavenger every SCAVENGER_FREQUENCY milliseconds */
-    /* scavenger function will take a write lock */
+    /* scavenger function will take a lock */
     if(utils_ticksdiff(0, pnotify->lscavenge) >= SCAVENGER_FREQUENCY)
     {
+        if(flock == 1)
+        {
+            lock_unlock(pnotify->fclock);
+            flock = 0;
+        }
         run_fcnotify_scavenger(pnotify);
     }
 
@@ -1248,13 +1260,7 @@ Finished:
 
     if(flock == 1)
     {
-        lock_writeunlock(pnotify->fclock);
-        flock = 0;
-    }
-
-    if(flock == 2)
-    {
-        lock_readunlock(pnotify->fclock);
+        lock_unlock(pnotify->fclock);
         flock = 0;
     }
 
@@ -1291,8 +1297,7 @@ void fcnotify_close(fcnotify_context * pnotify, size_t * poffset, unsigned int *
     _ASSERT(poffset != NULL);
     _ASSERT(pcount  != NULL);
 
-    /* offset is written under writelock. Use only under readlock */
-    lock_writelock(pnotify->fclock);
+    lock_lock(pnotify->fclock);
     _ASSERT(*poffset > 0);
 
     /* Just decrement the refcount. Scavenger will take care of deleting the entry */
@@ -1305,7 +1310,7 @@ void fcnotify_close(fcnotify_context * pnotify, size_t * poffset, unsigned int *
     *poffset = 0;
     *pcount  = 0;
 
-    lock_writeunlock(pnotify->fclock);
+    lock_unlock(pnotify->fclock);
 
     dprintverbose("end fcnotify_close");
 
@@ -1338,7 +1343,7 @@ int fcnotify_getinfo(fcnotify_context * pnotify, zend_bool summaryonly, fcnotify
         goto Finished;
     }
 
-    lock_readlock(pnotify->fclock);
+    lock_lock(pnotify->fclock);
     flock = 1;
 
     pcinfo->itemcount = pnotify->fcheader->itemcount;
@@ -1403,7 +1408,7 @@ Finished:
 
     if(flock)
     {
-        lock_readunlock(pnotify->fclock);
+        lock_unlock(pnotify->fclock);
         flock = 0;
     }
 

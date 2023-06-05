@@ -28,6 +28,7 @@
    | Module: wincache_alloc.c                                                                     |
    +----------------------------------------------------------------------------------------------+
    | Author: Kanwaljeet Singla <ksingla@microsoft.com>                                            |
+   | Updated: Eric Stenson <ericsten@microsoft.com>                                               |
    +----------------------------------------------------------------------------------------------+
 */
 
@@ -91,12 +92,12 @@ static int allocate_memory(alloc_context * palloc, size_t size, void ** ppaddr)
     alloc_used_header *    usedh   = NULL;
 
     const char *           filename;
-    uint                   lineno;
+    uint32_t               lineno;
 
     dprintdecorate("start allocate_memory");
 
     _ASSERT(palloc         != NULL);
-    _ASSERT(palloc->rwlock != NULL);
+    _ASSERT(palloc->lock   != NULL);
     _ASSERT(palloc->header != NULL);
     _ASSERT(size           >= 0);
 
@@ -111,11 +112,15 @@ static int allocate_memory(alloc_context * palloc, size_t size, void ** ppaddr)
     segaddr = palloc->memaddr;
     header  = palloc->header;
 
-    /* Allocate in sizes which are multiples of 4 */
+    /* Allocate in sizes which are multiples of size_t */
+#ifdef _WIN64
+    size = ALIGNQWORD(size);
+#else /* _WIN64 */
     size = ALIGNDWORD(size);
+#endif /* _WIN64 */
 
-    /* Acquire write lock to segment before doing anything */
-    lock_writelock(palloc->rwlock);
+    /* Acquire lock to segment before doing anything */
+    lock_lock(palloc->lock);
     flock = 1;
 
     /* If available size is less than requested size, return NULL */
@@ -126,7 +131,7 @@ static int allocate_memory(alloc_context * palloc, size_t size, void ** ppaddr)
     }
 
     /* Get pointer to start block and move to next block */
-    freeh = FREE_HEADER(segaddr, sizeof(alloc_segment_header));
+    freeh = (alloc_free_header *)(header + 1);
     _ASSERT(freeh->is_free == BLOCK_ISFREE_FIRST);
     if (freeh->is_free != BLOCK_ISFREE_FIRST)
     {
@@ -156,6 +161,17 @@ static int allocate_memory(alloc_context * palloc, size_t size, void ** ppaddr)
     while(freeh->is_free != BLOCK_ISFREE_LAST)
     {
         _ASSERT(freeh->is_free == BLOCK_ISFREE_FREE);
+        if (freeh->is_free != BLOCK_ISFREE_FREE)
+        {
+            dprintcritical("allocate_memory: Free block is not BLOCK_ISFREE_FREE");
+            result = FATAL_ALLOC_SEGMENT_CORRUPT;
+
+            utils_get_filename_and_line(&filename, &lineno);
+            EventWriteMemFreeListCorrupt(freeh, palloc, filename, lineno);
+
+            goto Finished;
+        }
+
         if(freeh->size >= size)
         {
             break;
@@ -172,16 +188,6 @@ static int allocate_memory(alloc_context * palloc, size_t size, void ** ppaddr)
     }
 
     _ASSERT(freeh->is_free == BLOCK_ISFREE_FREE);
-    if (freeh->is_free != BLOCK_ISFREE_FREE)
-    {
-        dprintcritical("allocate_memory: Free block is not BLOCK_ISFREE_FREE");
-        result = FATAL_ALLOC_SEGMENT_CORRUPT;
-
-        utils_get_filename_and_line(&filename, &lineno);
-        EventWriteMemFreeListCorrupt(freeh, palloc, filename, lineno);
-
-        goto Finished;
-    }
 
     /* Got a free block with sufficient free memory. Now */
     /* see if block size is big enough to be broken into two */
@@ -260,7 +266,7 @@ Finished:
 
     if(flock)
     {
-        lock_writeunlock(palloc->rwlock);
+        lock_unlock(palloc->lock);
         flock = 0;
     }
 
@@ -291,7 +297,7 @@ static void free_memory(alloc_context * palloc, void * paddr)
     alloc_free_header *    pfree  = NULL;
 
     const char *           filename;
-    uint                   lineno;
+    uint32_t               lineno;
 
     dprintdecorate("start free_memory");
 
@@ -306,7 +312,7 @@ static void free_memory(alloc_context * palloc, void * paddr)
     }
 
     /* Free the block from shared segment */
-    lock_writelock(palloc->rwlock);
+    lock_lock(palloc->lock);
     flock = 1;
 
     header  = palloc->header;
@@ -442,7 +448,7 @@ Finished:
 
     if(flock)
     {
-        lock_writeunlock(palloc->rwlock);
+        lock_unlock(palloc->lock);
         flock = 0;
     }
 
@@ -461,13 +467,13 @@ static size_t get_memory_size(alloc_context * palloc, void * addr)
     _ASSERT(palloc != NULL);
     _ASSERT(addr   != NULL);
 
-    lock_readlock(palloc->rwlock);
+    lock_lock(palloc->lock);
 
     usedh = (alloc_used_header *)((char *)addr - sizeof(alloc_used_header));
     _ASSERT(usedh->is_free == BLOCK_ISFREE_USED);
 
     size = usedh->size;
-    lock_readunlock(palloc->rwlock);
+    lock_unlock(palloc->lock);
 
     dprintverbose("end get_memory_size");
     return size;
@@ -541,7 +547,7 @@ static void * alloc_realloc(alloc_context * palloc, unsigned int type, void * ad
 static char * alloc_strdup(alloc_context * palloc, unsigned int type, const char * str)
 {
     char * result = NULL;
-    int    strl   = 0;
+    size_t strl   = 0;
 
     _ASSERT(str != NULL);
     strl = strlen(str) + 1;
@@ -616,7 +622,7 @@ int alloc_create(alloc_context ** ppalloc)
     palloc->hinitdone = NULL;
     palloc->memaddr   = NULL;
     palloc->size      = 0;
-    palloc->rwlock    = NULL;
+    palloc->lock      = NULL;
     palloc->header    = NULL;
     palloc->localheap = 0;
 
@@ -650,7 +656,7 @@ void alloc_destroy(alloc_context * palloc)
 
 /* initmemory should be 1 for all non file backed shared memory allocators and 0 */
 /* for file backed shared memory allocators when filemap->existing is set to 1 */
-int alloc_initialize(alloc_context * palloc, unsigned short islocal, char * name, unsigned short cachekey, void * staddr, size_t size, unsigned char initmemory TSRMLS_DC)
+int alloc_initialize(alloc_context * palloc, unsigned short islocal, char * name, unsigned short cachekey, void * staddr, size_t size, unsigned char initmemory)
 {
     int                    result   = NONFATAL;
     unsigned short         locktype = LOCK_TYPE_SHARED;
@@ -674,9 +680,7 @@ int alloc_initialize(alloc_context * palloc, unsigned short islocal, char * name
     palloc->header    = (alloc_segment_header *)staddr;
     header            = palloc->header;
 
-    /* Create shared, xread, xwrite lock as all operations */
-    /* on allocator will end up changing segment information */
-    result = lock_create(&palloc->rwlock);
+    result = lock_create(&palloc->lock);
     if(FAILED(result))
     {
         goto Finished;
@@ -688,13 +692,13 @@ int alloc_initialize(alloc_context * palloc, unsigned short islocal, char * name
         palloc->islocal = islocal;
     }
 
-    result = lock_initialize(palloc->rwlock, name, cachekey, locktype, LOCK_USET_XREAD_XWRITE, NULL TSRMLS_CC);
+    result = lock_initialize(palloc->lock, name, cachekey, locktype, &header->last_owner);
     if(FAILED(result))
     {
         goto Finished;
     }
 
-    result = utils_create_init_event(palloc->rwlock->nameprefix, "ALLOC_INIT", &palloc->hinitdone, &isfirst);
+    result = utils_create_init_event(palloc->lock->nameprefix, "ALLOC_INIT", &palloc->hinitdone, &isfirst);
     if (FAILED(result))
     {
         result = FATAL_ALLOC_INIT_EVENT;
@@ -705,7 +709,7 @@ int alloc_initialize(alloc_context * palloc, unsigned short islocal, char * name
     /* header on the shared memory segment start */
     if(islocal || isfirst)
     {
-        /* No need to get a write lock as other processes */
+        /* No need to get a lock as other processes */
         /* are blocked waiting for hinitdone event */
 
         if(initmemory)
@@ -770,12 +774,12 @@ Finished:
 
         if(palloc != NULL)
         {
-            if(palloc->rwlock != NULL)
+            if(palloc->lock != NULL)
             {
-                lock_terminate(palloc->rwlock);
-                lock_destroy(palloc->rwlock);
+                lock_terminate(palloc->lock);
+                lock_destroy(palloc->lock);
 
-                palloc->rwlock = NULL;
+                palloc->lock = NULL;
             }
 
             if(palloc->hinitdone != NULL)
@@ -807,12 +811,12 @@ void alloc_terminate(alloc_context * palloc)
             palloc->header = NULL;
         }
 
-        if(palloc->rwlock != NULL)
+        if(palloc->lock != NULL)
         {
-            lock_terminate(palloc->rwlock);
-            lock_destroy(palloc->rwlock);
+            lock_terminate(palloc->lock);
+            lock_destroy(palloc->lock);
 
-            palloc->rwlock = NULL;
+            palloc->lock = NULL;
         }
 
         if(palloc->hinitdone != NULL)
@@ -955,18 +959,18 @@ void * alloc_get_cacheheader(alloc_context * palloc, unsigned int msize, unsigne
         goto Finished;
     }
 
-    lock_writelock(palloc->rwlock);
+    lock_lock(palloc->lock);
     if(*pcvalue != 0)
     {
         /* Some other process allocated before this process could do */
-        lock_writeunlock(palloc->rwlock);
+        lock_unlock(palloc->lock);
         free_memory(palloc, pvoid);
         pvoid = (void *)((char *)palloc->memaddr + (*pcvalue));
     }
     else
     {
         *pcvalue = POINTER_OFFSET(palloc->memaddr, pvoid);
-        lock_writeunlock(palloc->rwlock);
+        lock_unlock(palloc->lock);
     }
 
 Finished:
@@ -1026,7 +1030,7 @@ int alloc_getinfo(alloc_context * palloc, alloc_info ** ppinfo)
         goto Finished;
     }
 
-    lock_readlock(palloc->rwlock);
+    lock_lock(palloc->lock);
 
     pinfo->total_size   = palloc->header->total_size;
     pinfo->free_size    = palloc->header->free_size;
@@ -1034,7 +1038,7 @@ int alloc_getinfo(alloc_context * palloc, alloc_info ** ppinfo)
     pinfo->freecount    = palloc->header->freecount;
     pinfo->mem_overhead = (palloc->header->usedcount + palloc->header->freecount + 2) * sizeof(alloc_free_header);
 
-    lock_readunlock(palloc->rwlock);
+    lock_unlock(palloc->lock);
 
     *ppinfo = pinfo;
     _ASSERT(SUCCEEDED(result));
@@ -1180,7 +1184,11 @@ void * alloc_ommalloc(alloc_context * palloc, size_t hoffset, size_t size)
     _ASSERT(hoffset >  0);
     _ASSERT(size    >  0);
 
+#ifdef _WIN64
+    rsize  = ALIGNQWORD(size);
+#else /* _WIN64 */
     rsize  = ALIGNDWORD(size);
+#endif /* _WIN64 */
     header = (alloc_mpool_header *)((char *)palloc->memaddr + hoffset);
 
     if(rsize <= POOL_ALLOCATION_SMALL_MAX)
@@ -1348,7 +1356,7 @@ char * alloc_osstrdup(alloc_context * palloc, size_t hoffset, const char * str)
 char * alloc_omstrdup(alloc_context * palloc, size_t hoffset, const char * str)
 {
     char * memaddr = NULL;
-    int    strl    = 0;
+    size_t strl    = 0;
 
     _ASSERT(palloc  != NULL);
     _ASSERT(hoffset >  0);
@@ -1407,7 +1415,6 @@ void alloc_runtest()
     alloc_free_header *     freeh  = NULL;
     alloc_used_header *     usedh  = NULL;
 
-    TSRMLS_FETCH();
     dprintverbose("*** STARTING ALLOC TESTS ***");
 
     memaddr = malloc(4096);
@@ -1423,14 +1430,14 @@ void alloc_runtest()
         goto Finished;
     }
 
-    result = alloc_initialize(palloc, islocal, "ALLOC_TEST", 1, memaddr, 4096, 1 TSRMLS_CC);
+    result = alloc_initialize(palloc, islocal, "ALLOC_TEST", 1, memaddr, 4096, 1);
     if(FAILED(result))
     {
         goto Finished;
     }
 
     /* Verify alloc_context, alloc_segment_header and free blocks */
-    _ASSERT(palloc->rwlock  != NULL);
+    _ASSERT(palloc->lock    != NULL);
     _ASSERT(palloc->size    == 4096);
     _ASSERT(palloc->header  != NULL);
     _ASSERT(palloc->memaddr != NULL);
